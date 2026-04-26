@@ -1,11 +1,13 @@
 export const config = { runtime: 'edge' };
 
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
+
 export default async function handler(req) {
   if (req.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
       headers: {
-        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
         'Access-Control-Allow-Methods': 'POST, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
       },
@@ -16,8 +18,8 @@ export default async function handler(req) {
     return json({ error: 'Method not allowed' }, 405);
   }
 
-  const GEMINI_KEY = process.env.GEMINI_API_KEY;
-  if (!GEMINI_KEY) {
+  const GROQ_KEY = process.env.GROQ_API_KEY;
+  if (!GROQ_KEY) {
     return json({ error: 'Server misconfiguration: API key not set.' }, 500);
   }
 
@@ -34,38 +36,39 @@ export default async function handler(req) {
     return json({ error: 'Invalid prompt.' }, 400);
   }
 
+  if (!['triage', 'report'].includes(mode)) {
+    return json({ error: 'Invalid mode.' }, 400);
+  }
+
   const systemPrompt = mode === 'triage'
     ? 'You are RapidCR, an AI crisis triage assistant for community safety. Be concise, structured, and professional. Always format with clear section headers.'
     : 'You are RapidCR, an AI that generates professional post-incident compliance reports. Be thorough, structured, and use formal language suitable for management review and insurance.';
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
-
   try {
-    const geminiRes = await fetch(url, {
+    const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${GROQ_KEY}`,
+      },
       body: JSON.stringify({
-        system_instruction: {
-          parts: [{ text: systemPrompt }]
-        },
-        contents: [{
-          parts: [{ text: prompt }]
-        }],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 1024,
-        }
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.7,
+        max_tokens: 1024,
       }),
     });
 
-    if (!geminiRes.ok) {
-      const err = await geminiRes.json();
-      return json({ error: err.error?.message || 'Gemini API error.' }, 502);
+    if (!groqRes.ok) {
+      const err = await groqRes.json();
+      return json({ error: err.error?.message || 'Groq API error.' }, 502);
     }
 
-    const data = await geminiRes.json();
-    const result = data.candidates?.[0]?.content?.parts?.[0]?.text || 'No response received.';
-
+    const data = await groqRes.json();
+    const result = data.choices?.[0]?.message?.content || 'No response received.';
     return json({ result }, 200);
   } catch (err) {
     return json({ error: 'Failed to reach AI service. Try again.' }, 503);
@@ -77,7 +80,7 @@ function json(data, status = 200) {
     status,
     headers: {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': ALLOWED_ORIGIN,
     },
   });
 }
